@@ -1,421 +1,143 @@
+// ==========================================
+// BLOCK 1: Includes, Namespace, and Type Aliases
+// ==========================================
 #ifndef CORE_KIT_HPP
 #define CORE_KIT_HPP
 
-#include <iostream>
-#include <string>
 #include <vector>
+#include <string>
+#include <string_view>
 #include <variant>
+#include <unordered_map>
 #include <map>
 #include <algorithm>
 #include <numeric>
-#include <cmath>
-#include <iomanip>
-#include <sstream>
+#include <stdexcept>
+#include <iostream>
 #include <fstream>
+#include <sstream>
+#include <cmath>
 #include <thread>
 #include <future>
-#include <functional>
-#include <stdexcept>
+#include <iomanip>
 
 namespace CoreKit {
 
+// Heterogeneous cell type supporting multiple standard types and empty states (NA)
 using Value = std::variant<std::monostate, int, double, bool, std::string>;
 
+// Forward declarations
+class Table;
+class GroupByProxy;
+
+
+// ==========================================
+// BLOCK 2: Column Structure Definition
+// ==========================================
+struct Column {
+    std::string name;
+    std::vector<Value> data;
+};
+
+
+// ==========================================
+// BLOCK 3: Table Class - Setup & Row/Column Modifiers
+// ==========================================
 class Table {
-private:
-    // Структура Column должна быть объявлена первой для корректной видимости в RowProxy
-    struct Column {
-        std::string name;
-        std::vector<Value> data;
-    };
-
-    std::vector<Column> columns_;
-    size_t row_count_ = 0;
-
 public:
-    // Представление строки для доступа по имени колонок при предикатной фильтрации
-    class RowProxy {
-    private:
-        const std::vector<Column>& columns_;
-        size_t row_idx_;
-    public:
-        RowProxy(const std::vector<Column>& cols, size_t r) : columns_(cols), row_idx_(r) {}
+    Table() : row_count_(0) {}
 
-        template<typename T>
-        T get(const std::string& colName) const {
-            for (const auto& col : columns_) {
-                if (col.name == colName) {
-                    if (row_idx_ >= col.data.size()) {
-                        throw std::out_of_range("Row index out of range");
-                    }
-                    try {
-                        return std::get<T>(col.data[row_idx_]);
-                    } catch (...) {
-                        throw std::runtime_error("Type mismatch or missing value (NA) in column: " + colName);
-                    }
-                }
-            }
-            throw std::out_of_range("Column not found: " + colName);
-        }
-
-        const Value& getVariant(const std::string& colName) const {
-            for (const auto& col : columns_) {
-                if (col.name == colName) {
-                    return col.data[row_idx_];
-                }
-            }
-            throw std::out_of_range("Column not found: " + colName);
-        }
-    };
-
-private:
-    int findCol(const std::string& name) const {
-        for (size_t i = 0; i < columns_.size(); ++i) {
-            if (columns_[i].name == name) return static_cast<int>(i);
-        }
-        return -1;
-    }
-
-    std::vector<double> getNumericData(int col_idx) const {
-        std::vector<double> result;
-        for (const auto& val : columns_[col_idx].data) {
-            if (std::holds_alternative<int>(val)) {
-                result.push_back(static_cast<double>(std::get<int>(val)));
-            } else if (std::holds_alternative<double>(val)) {
-                result.push_back(std::get<double>(val));
-            }
-        }
-        return result;
-    }
-
-    double getQuantile(std::vector<double>& sorted_nums, double q) const {
-        if (sorted_nums.empty()) return 0.0;
-        double pos = q * (sorted_nums.size() - 1);
-        size_t idx = static_cast<size_t>(pos);
-        double frac = pos - idx;
-        if (idx + 1 < sorted_nums.size()) {
-            return sorted_nums[idx] * (1.0 - frac) + sorted_nums[idx + 1] * frac;
-        }
-        return sorted_nums[idx];
-    }
-
-    Value parseCell(const std::string& str) const {
-        if (str.empty() || str == "NA" || str == "null") {
-            return std::monostate{};
-        }
-        if (str == "true") return true;
-        if (str == "false") return false;
-
-        try {
-            size_t idx = 0;
-            int i_val = std::stoi(str, &idx);
-            if (idx == str.size()) return i_val;
-        } catch (...) {}
-
-        try {
-            size_t idx = 0;
-            double d_val = std::stod(str, &idx);
-            if (idx == str.size()) return d_val;
-        } catch (...) {}
-
-        return str;
-    }
-
-public:
-    void addColumn(const std::string& name) {
-        columns_.push_back({name, {}});
+    void addColumn(std::string_view name) {
+        columns_.push_back({std::string(name), std::vector<Value>(row_count_, std::monostate{})});
     }
 
     void addRow(std::initializer_list<Value> values) {
-        size_t i = 0;
+        size_t colIdx = 0;
         for (const auto& val : values) {
-            columns_[i].data.push_back(val);
-            ++i;
+            if (colIdx >= columns_.size()) {
+                columns_.push_back({"Col_" + std::to_string(colIdx), std::vector<Value>(row_count_, std::monostate{})});
+            }
+            columns_[colIdx].data.push_back(val);
+            colIdx++;
         }
-        ++row_count_;
+        for (size_t i = colIdx; i < columns_.size(); ++i) {
+            columns_[i].data.push_back(std::monostate{});
+        }
+        row_count_++;
     }
 
-    void addRowUnchecked(const std::vector<Value>& values) {
-        for (size_t i = 0; i < columns_.size(); ++i) {
-            columns_[i].data.push_back(values[i]);
+    void addRowVector(const std::vector<Value>& values) {
+        size_t colIdx = 0;
+        for (const auto& val : values) {
+            if (colIdx >= columns_.size()) {
+                columns_.push_back({"Col_" + std::to_string(colIdx), std::vector<Value>(row_count_, std::monostate{})});
+            }
+            columns_[colIdx].data.push_back(val);
+            colIdx++;
         }
-        ++row_count_;
+        for (size_t i = colIdx; i < columns_.size(); ++i) {
+            columns_[i].data.push_back(std::monostate{});
+        }
+        row_count_++;
     }
 
     size_t rowCount() const { return row_count_; }
-    size_t colCount() const { return columns_.size(); }
+    size_t columnCount() const { return columns_.size(); }
 
-    // Красивый вывод таблицы
-    void print() const {
-        for (const auto& col : columns_) {
-            std::cout << std::setw(14) << col.name << " | ";
-        }
-        std::cout << "\n";
+    size_t findColumnIndex(std::string_view colName) const {
         for (size_t i = 0; i < columns_.size(); ++i) {
-            std::cout << "---------------+--";
+            if (columns_[i].name == colName) return i;
         }
-        std::cout << "\n";
-
-        for (size_t r = 0; r < row_count_; ++r) {
-            for (const auto& col : columns_) {
-                std::cout << std::setw(14);
-                const auto& val = col.data[r];
-                std::visit([](auto&& arg) {
-                    using T = std::decay_t<decltype(arg)>;
-                    if constexpr (std::is_same_v<T, std::monostate>) {
-                        std::cout << "NA";
-                    } else if constexpr (std::is_same_v<T, bool>) {
-                        std::cout << (arg ? "true" : "false");
-                    } else {
-                        std::cout << arg;
-                    }
-                }, val);
-                std::cout << " | ";
-            }
-            std::cout << "\n";
-        }
+        throw std::runtime_error("Column not found: " + std::string(colName));
     }
 
-    // --- Описательная статистика ---
-    double mean(const std::string& colName) const {
-        int idx = findCol(colName);
-        if (idx == -1) return 0.0;
-        auto nums = getNumericData(idx);
-        if (nums.empty()) return 0.0;
-        return std::accumulate(nums.begin(), nums.end(), 0.0) / nums.size();
-    }
 
-    // Умная многопоточность: авто-определение ядер и чанкинг через std::future
-    double parallelMean(const std::string& colName) const {
-        int idx = findCol(colName);
-        if (idx == -1) return 0.0;
-        
-        auto nums = getNumericData(idx);
-        if (nums.empty()) return 0.0;
+    // ==========================================
+    // BLOCK 4: Table Class - Sorting, Filtering & Distinct Values
+    // ==========================================
 
-        unsigned int hardware_threads = std::thread::hardware_concurrency();
-        size_t num_threads = (hardware_threads > 0) ? hardware_threads : 2;
-
-        if (nums.size() < 1000 || num_threads == 1) {
-            return std::accumulate(nums.begin(), nums.end(), 0.0) / nums.size();
-        }
-
-        size_t chunk_size = nums.size() / num_threads;
-        std::vector<std::future<double>> futures;
-
-        for (size_t i = 0; i < num_threads; ++i) {
-            size_t start = i * chunk_size;
-            size_t end = (i == num_threads - 1) ? nums.size() : start + chunk_size;
-
-            futures.push_back(std::async(std::launch::async, [start, end, &nums]() {
-                double partial_sum = 0.0;
-                for (size_t j = start; j < end; ++j) {
-                    partial_sum += nums[j];
-                }
-                return partial_sum;
-            }));
-        }
-
-        double total_sum = 0.0;
-        for (auto& fut : futures) {
-            total_sum += fut.get();
-        }
-
-        return total_sum / nums.size();
-    }
-
-    double median(const std::string& colName) const {
-        int idx = findCol(colName);
-        if (idx == -1) return 0.0;
-        auto nums = getNumericData(idx);
-        if (nums.empty()) return 0.0;
-
-        std::sort(nums.begin(), nums.end());
-        size_t n = nums.size();
-        if (n % 2 == 0) {
-            return (nums[n / 2 - 1] + nums[n / 2]) / 2.0;
-        }
-        return nums[n / 2];
-    }
-
-    double variance(const std::string& colName) const {
-        int idx = findCol(colName);
-        if (idx == -1) return 0.0;
-        auto nums = getNumericData(idx);
-        if (nums.size() <= 1) return 0.0;
-
-        double m = mean(colName);
-        double sq_sum = 0.0;
-        for (double val : nums) {
-            sq_sum += (val - m) * (val - m);
-        }
-        return sq_sum / (nums.size() - 1);
-    }
-
-    double standardDeviation(const std::string& colName) const {
-        return std::sqrt(variance(colName));
-    }
-
-    // --- Очистка данных ---
-    void fillMissing(const std::string& colName, double fallbackValue) {
-        int idx = findCol(colName);
-        if (idx == -1) return;
-
-        for (auto& val : columns_[idx].data) {
-            if (std::holds_alternative<std::monostate>(val)) {
-                val = fallbackValue;
-            }
-        }
-    }
-
-    void fillMissingWithMean(const std::string& colName) {
-        double m = mean(colName);
-        fillMissing(colName, m);
-    }
-
-    void removeOutliers(const std::string& colName) {
-        int idx = findCol(colName);
-        if (idx == -1 || row_count_ == 0) return;
-
-        auto nums = getNumericData(idx);
-        if (nums.size() < 4) return;
-
-        std::sort(nums.begin(), nums.end());
-        double q1 = getQuantile(nums, 0.25);
-        double q3 = getQuantile(nums, 0.75);
-        double iqr = q3 - q1;
-
-        double lower_bound = q1 - 1.5 * iqr;
-        double upper_bound = q3 + 1.5 * iqr;
-
-        std::vector<size_t> valid_indices;
-        for (size_t r = 0; r < row_count_; ++r) {
-            const auto& val = columns_[idx].data[r];
-            double num_val = 0.0;
-            bool is_valid_num = false;
-
-            if (std::holds_alternative<int>(val)) {
-                num_val = static_cast<double>(std::get<int>(val));
-                is_valid_num = true;
-            } else if (std::holds_alternative<double>(val)) {
-                num_val = std::get<double>(val);
-                is_valid_num = true;
-            }
-
-            if (!is_valid_num || (num_val >= lower_bound && num_val <= upper_bound)) {
-                valid_indices.push_back(r);
-            }
-        }
-
-        for (auto& col : columns_) {
-            std::vector<Value> filtered_data;
-            filtered_data.reserve(valid_indices.size());
-            for (size_t r_idx : valid_indices) {
-                filtered_data.push_back(col.data[r_idx]);
-            }
-            col.data = std::move(filtered_data);
-        }
-        row_count_ = valid_indices.size();
-    }
-
-    // --- Корреляционный анализ ---
-    double pearsonCorrelation(const std::string& colName1, const std::string& colName2) const {
-        int idx1 = findCol(colName1);
-        int idx2 = findCol(colName2);
-        if (idx1 == -1 || idx2 == -1) return 0.0;
-
-        auto nums1 = getNumericData(idx1);
-        auto nums2 = getNumericData(idx2);
-        if (nums1.size() != nums2.size() || nums1.empty()) return 0.0;
-
-        double m1 = mean(colName1);
-        double m2 = mean(colName2);
-
-        double numerator = 0.0;
-        double denom1 = 0.0;
-        double denom2 = 0.0;
-
-        for (size_t i = 0; i < nums1.size(); ++i) {
-            double diff1 = nums1[i] - m1;
-            double diff2 = nums2[i] - m2;
-            numerator += diff1 * diff2;
-            denom1 += diff1 * diff1;
-            denom2 += diff2 * diff2;
-        }
-
-        if (denom1 == 0.0 || denom2 == 0.0) return 0.0;
-        return numerator / (std::sqrt(denom1) * std::sqrt(denom2));
-    }
-
-    // --- Оконные функции ---
-    std::vector<double> rollingSum(const std::string& colName, size_t windowSize) const {
-        int idx = findCol(colName);
-        std::vector<double> result;
-        if (idx == -1 || windowSize == 0) return result;
-
-        auto nums = getNumericData(idx);
-        if (nums.size() < windowSize) return result;
-
-        result.reserve(nums.size() - windowSize + 1);
-        double window_sum = 0.0;
-
-        for (size_t i = 0; i < nums.size(); ++i) {
-            window_sum += nums[i];
-            if (i >= windowSize) {
-                window_sum -= nums[i - windowSize];
-            }
-            if (i >= windowSize - 1) {
-                result.push_back(window_sum);
-            }
-        }
-        return result;
-    }
-
-    std::vector<double> rollingMean(const std::string& colName, size_t windowSize) const {
-        std::vector<double> result;
-        if (windowSize == 0) return result;
-        
-        auto sums = rollingSum(colName, windowSize);
-        result.reserve(sums.size());
-        for (double s : sums) {
-            result.push_back(s / windowSize);
-        }
-        return result;
-    }
-
-    // --- Сортировка и фильтрация ---
-    void sortBy(const std::string& colName, bool ascending = true) {
-        int idx = findCol(colName);
-        if (idx == -1 || row_count_ <= 1) return;
-
+    void sortBy(std::string_view colName, bool ascending = true) {
+        size_t colIdx = findColumnIndex(colName);
         std::vector<size_t> indices(row_count_);
         std::iota(indices.begin(), indices.end(), 0);
 
-        const auto& col_data = columns_[idx].data;
+        const auto& colData = columns_[colIdx].data;
         std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
-            if (ascending) {
-                return col_data[a] < col_data[b];
-            } else {
-                return col_data[b] < col_data[a];
+            const auto& valA = colData[a];
+            const auto& valB = colData[b];
+            if (valA.index() != valB.index()) {
+                return valA.index() < valB.index();
             }
+            bool result = false;
+            std::visit([&](const auto& vA) {
+                using T = std::decay_t<decltype(vA)>;
+                if constexpr (std::is_same_v<T, std::monostate>) {
+                    result = false;
+                } else {
+                    const auto& vB = std::get<T>(valB);
+                    result = vA < vB;
+                }
+            }, valA);
+            return ascending ? result : !result;
         });
 
         for (auto& col : columns_) {
             std::vector<Value> sorted_data;
-            sorted_data.reserve(row_count_);
-            for (size_t i : indices) {
-                sorted_data.push_back(col.data[i]);
+            sorted_data.resize(row_count_);
+            for (size_t i = 0; i < row_count_; ++i) {
+                sorted_data[i] = std::move(col.data[indices[i]]);
             }
             col.data = std::move(sorted_data);
         }
     }
 
-    std::vector<Value> unique(const std::string& colName) const {
-        int idx = findCol(colName);
-        std::vector<Value> result;
-        if (idx == -1) return result;
+    template<typename Predicate>
+    Table filter(Predicate pred) const;
 
-        for (const auto& val : columns_[idx].data) {
+    std::vector<Value> unique(std::string_view colName) const {
+        size_t colIdx = findColumnIndex(colName);
+        std::vector<Value> result;
+        for (const auto& val : columns_[colIdx].data) {
             if (std::find(result.begin(), result.end(), val) == result.end()) {
                 result.push_back(val);
             }
@@ -423,105 +145,314 @@ public:
         return result;
     }
 
-    Table filter(std::function<bool(const RowProxy&)> predicate) const {
-        Table result;
-        for (const auto& col : columns_) {
-            result.addColumn(col.name);
+    std::map<Value, size_t> valueCounts(std::string_view colName) const {
+        size_t colIdx = findColumnIndex(colName);
+        std::map<Value, size_t> counts;
+        for (const auto& val : columns_[colIdx].data) {
+            counts[val]++;
+        }
+        return counts;
+    }
+
+    GroupByProxy groupBy(std::string_view colName);
+
+
+    // ==========================================
+    // BLOCK 5: Table Class - Statistics, Multithreading & Window Functions
+    // ==========================================
+
+    double mean(std::string_view colName) const {
+        size_t colIdx = findColumnIndex(colName);
+        double sum = 0.0;
+        size_t count = 0;
+        for (const auto& val : columns_[colIdx].data) {
+            if (std::holds_alternative<int>(val)) {
+                sum += std::get<int>(val);
+                count++;
+            } else if (std::holds_alternative<double>(val)) {
+                sum += std::get<double>(val);
+                count++;
+            }
+        }
+        if (count == 0) return 0.0;
+        return sum / count;
+    }
+
+    double sum(std::string_view colName) const {
+        size_t colIdx = findColumnIndex(colName);
+        double total = 0.0;
+        for (const auto& val : columns_[colIdx].data) {
+            if (std::holds_alternative<int>(val)) {
+                total += std::get<int>(val);
+            } else if (std::holds_alternative<double>(val)) {
+                total += std::get<double>(val);
+            }
+        }
+        return total;
+    }
+
+    double median(std::string_view colName) const {
+        size_t colIdx = findColumnIndex(colName);
+        std::vector<double> vals;
+        for (const auto& val : columns_[colIdx].data) {
+            if (std::holds_alternative<int>(val)) vals.push_back(std::get<int>(val));
+            else if (std::holds_alternative<double>(val)) vals.push_back(std::get<double>(val));
+        }
+        if (vals.empty()) return 0.0;
+        std::sort(vals.begin(), vals.end());
+        size_t mid = vals.size() / 2;
+        if (vals.size() % 2 == 0) {
+            return (vals[mid - 1] + vals[mid]) / 2.0;
+        }
+        return vals[mid];
+    }
+
+    double variance(std::string_view colName) const {
+        double m = mean(colName);
+        size_t colIdx = findColumnIndex(colName);
+        double sq_sum = 0.0;
+        size_t count = 0;
+        for (const auto& val : columns_[colIdx].data) {
+            double v = 0.0;
+            bool valid = false;
+            if (std::holds_alternative<int>(val)) { v = std::get<int>(val); valid = true; }
+            else if (std::holds_alternative<double>(val)) { v = std::get<double>(val); valid = true; }
+            if (valid) {
+                sq_sum += (v - m) * (v - m);
+                count++;
+            }
+        }
+        if (count <= 1) return 0.0;
+        return sq_sum / (count - 1);
+    }
+
+    double standardDeviation(std::string_view colName) const {
+        return std::sqrt(variance(colName));
+    }
+
+    double parallelMean(std::string_view colName) const {
+        size_t colIdx = findColumnIndex(colName);
+        const auto& data = columns_[colIdx].data;
+        if (data.empty()) return 0.0;
+
+        unsigned int num_threads = std::thread::hardware_concurrency();
+        if (num_threads == 0) num_threads = 2;
+        if (data.size() < 1000 || num_threads == 1) {
+            return mean(colName);
         }
 
-        for (size_t r = 0; r < row_count_; ++r) {
-            RowProxy proxy(columns_, r);
-            if (predicate(proxy)) {
-                std::vector<Value> row_vals;
-                for (const auto& col : columns_) {
-                    row_vals.push_back(col.data[r]);
+        size_t chunk_size = data.size() / num_threads;
+        std::vector<std::future<std::pair<double, size_t>>> futures;
+
+        for (unsigned int i = 0; i < num_threads; ++i) {
+            size_t start = i * chunk_size;
+            size_t end = (i == num_threads - 1) ? data.size() : start + chunk_size;
+            futures.push_back(std::async(std::launch::async, [&data, start, end]() {
+                double local_sum = 0.0;
+                size_t local_count = 0;
+                for (size_t j = start; j < end; ++j) {
+                    const auto& val = data[j];
+                    if (std::holds_alternative<int>(val)) {
+                        local_sum += std::get<int>(val);
+                        local_count++;
+                    } else if (std::holds_alternative<double>(val)) {
+                        local_sum += std::get<double>(val);
+                        local_count++;
+                    }
                 }
-                result.addRowUnchecked(row_vals);
+                return std::make_pair(local_sum, local_count);
+            }));
+        }
+
+        double total_sum = 0.0;
+        size_t total_count = 0;
+        for (auto& f : futures) {
+            auto res = f.get();
+            total_sum += res.first;
+            total_count += res.second;
+        }
+
+        if (total_count == 0) return 0.0;
+        return total_sum / total_count;
+    }
+
+    std::vector<double> rollingSum(std::string_view colName, size_t window) const {
+        size_t colIdx = findColumnIndex(colName);
+        const auto& data = columns_[colIdx].data;
+        std::vector<double> result;
+        if (window == 0 || data.empty()) return result;
+
+        double current_sum = 0.0;
+        for (size_t i = 0; i < data.size(); ++i) {
+            double val = 0.0;
+            bool valid = false;
+            if (std::holds_alternative<int>(data[i])) { val = std::get<int>(data[i]); valid = true; }
+            else if (std::holds_alternative<double>(data[i])) { val = std::get<double>(data[i]); valid = true; }
+
+            if (valid) {
+                current_sum += val;
             }
+            if (i >= window) {
+                double old_val = 0.0;
+                if (std::holds_alternative<int>(data[i - window])) old_val = std::get<int>(data[i - window]);
+                else if (std::holds_alternative<double>(data[i - window])) old_val = std::get<double>(data[i - window]);
+                current_sum -= old_val;
+            }
+            result.push_back(current_sum);
         }
         return result;
     }
 
-    // --- GroupBy и Агрегация ---
-    class GroupByResult {
-    private:
-        std::map<Value, std::vector<size_t>> groups_;
-        const std::vector<Column>& columns_;
-        std::string group_col_;
-
-        const Value& getVal(const std::string& colName, size_t r) const {
-            for (const auto& col : columns_) {
-                if (col.name == colName) return col.data[r];
-            }
-            throw std::runtime_error("Column not found: " + colName);
+    std::vector<double> rollingMean(std::string_view colName, size_t window) const {
+        auto sums = rollingSum(colName, window);
+        std::vector<double> result;
+        result.reserve(sums.size());
+        for (size_t i = 0; i < sums.size(); ++i) {
+            size_t current_window = (i + 1 < window) ? (i + 1) : window;
+            result.push_back(sums[i] / current_window);
         }
-
-    public:
-        GroupByResult(const std::vector<Column>& cols, const std::string& groupCol) 
-            : columns_(cols), group_col_(groupCol) {
-            int idx = -1;
-            for (size_t i = 0; i < cols.size(); ++i) {
-                if (cols[i].name == groupCol) { idx = static_cast<int>(i); break; }
-            }
-            if (idx == -1) return;
-            for (size_t r = 0; r < cols[idx].data.size(); ++r) {
-                groups_[cols[idx].data[r]].push_back(r);
-            }
-        }
-
-        Table mean(const std::string& targetCol) const {
-            Table res;
-            res.addColumn(group_col_);
-            res.addColumn(targetCol + "_mean");
-
-            for (const auto& [key, indices] : groups_) {
-                double sum = 0.0;
-                size_t count = 0;
-                for (size_t r : indices) {
-                    const auto& val = getVal(targetCol, r);
-                    if (std::holds_alternative<int>(val)) {
-                        sum += std::get<int>(val);
-                        count++;
-                    } else if (std::holds_alternative<double>(val)) {
-                        sum += std::get<double>(val);
-                        count++;
-                    }
-                }
-                double m = (count > 0) ? (sum / count) : 0.0;
-                res.addRowUnchecked({key, m});
-            }
-            return res;
-        }
-
-        Table sum(const std::string& targetCol) const {
-            Table res;
-            res.addColumn(group_col_);
-            res.addColumn(targetCol + "_sum");
-
-            for (const auto& [key, indices] : groups_) {
-                double total = 0.0;
-                for (size_t r : indices) {
-                    const auto& val = getVal(targetCol, r);
-                    if (std::holds_alternative<int>(val)) {
-                        total += std::get<int>(val);
-                    } else if (std::holds_alternative<double>(val)) {
-                        total += std::get<double>(val);
-                    }
-                }
-                res.addRowUnchecked({key, total});
-            }
-            return res;
-        }
-    };
-
-    GroupByResult groupBy(const std::string& colName) const {
-        return GroupByResult(columns_, colName);
+        return result;
     }
 
-    // --- Модуль I/O (CSV / JSON) ---
-    void toCSV(const std::string& filename) const {
-        std::ofstream file(filename);
-        if (!file.is_open()) return;
+    double pearsonCorrelation(std::string_view col1, std::string_view col2) const {
+        size_t idx1 = findColumnIndex(col1);
+        size_t idx2 = findColumnIndex(col2);
+        const auto& d1 = columns_[idx1].data;
+        const auto& d2 = columns_[idx2].data;
+
+        size_t n = std::min(d1.size(), d2.size());
+        double sum1 = 0, sum2 = 0, sum1Sq = 0, sum2Sq = 0, pSum = 0;
+        size_t count = 0;
+
+        for (size_t i = 0; i < n; ++i) {
+            double v1 = 0, v2 = 0;
+            bool ok1 = false, ok2 = false;
+            if (std::holds_alternative<int>(d1[i])) { v1 = std::get<int>(d1[i]); ok1 = true; }
+            else if (std::holds_alternative<double>(d1[i])) { v1 = std::get<double>(d1[i]); ok1 = true; }
+
+            if (std::holds_alternative<int>(d2[i])) { v2 = std::get<int>(d2[i]); ok2 = true; }
+            else if (std::holds_alternative<double>(d2[i])) { v2 = std::get<double>(d2[i]); ok2 = true; }
+
+            if (ok1 && ok2) {
+                sum1 += v1;
+                sum2 += v2;
+                sum1Sq += v1 * v1;
+                sum2Sq += v2 * v2;
+                pSum += v1 * v2;
+                count++;
+            }
+        }
+
+        if (count == 0) return 0.0;
+        double num = pSum - (sum1 * sum2 / count);
+        double den = std::sqrt((sum1Sq - (sum1 * sum1 / count)) * (sum2Sq - (sum2 * sum2 / count)));
+        if (den == 0) return 0.0;
+        return num / den;
+    }
+
+    void fillMissingWithMean(std::string_view colName) {
+        size_t colIdx = findColumnIndex(colName);
+        double m = mean(colName);
+        for (auto& val : columns_[colIdx].data) {
+            if (std::holds_alternative<std::monostate>(val)) {
+                val = m;
+            }
+        }
+    }
+
+    void removeOutliers(std::string_view colName) {
+        size_t colIdx = findColumnIndex(colName);
+        std::vector<double> vals;
+        for (const auto& val : columns_[colIdx].data) {
+            if (std::holds_alternative<int>(val)) vals.push_back(std::get<int>(val));
+            else if (std::holds_alternative<double>(val)) vals.push_back(std::get<double>(val));
+        }
+        if (vals.size() < 4) return;
+        std::sort(vals.begin(), vals.end());
+        double q1 = vals[vals.size() / 4];
+        double q3 = vals[(vals.size() * 3) / 4];
+        double iqr = q3 - q1;
+        double lower = q1 - 1.5 * iqr;
+        double upper = q3 + 1.5 * iqr;
+
+        std::vector<size_t> valid_indices;
+        for (size_t i = 0; i < row_count_; ++i) {
+            const auto& val = columns_[colIdx].data[i];
+            bool keep = true;
+            if (std::holds_alternative<int>(val)) {
+                double v = std::get<int>(val);
+                if (v < lower || v > upper) keep = false;
+            } else if (std::holds_alternative<double>(val)) {
+                double v = std::get<double>(val);
+                if (v < lower || v > upper) keep = false;
+            }
+            if (keep) valid_indices.push_back(i);
+        }
+
+        for (auto& col : columns_) {
+            std::vector<Value> filtered_data;
+            filtered_data.resize(valid_indices.size());
+            for (size_t i = 0; i < valid_indices.size(); ++i) {
+                filtered_data[i] = std::move(col.data[valid_indices[i]]);
+            }
+            col.data = std::move(filtered_data);
+        }
+        row_count_ = valid_indices.size();
+    }
+
+
+    // ==========================================
+    // BLOCK 6: Table Class - File I/O & Terminal Printing
+    // ==========================================
+
+    void fromCSV(std::string_view filename) {
+        std::ifstream file{std::string(filename)};
+        if (!file.is_open()) throw std::runtime_error("Could not open file for reading");
+        std::string line;
+        if (!std::getline(file, line)) return;
+
+        columns_.clear();
+        row_count_ = 0;
+
+        std::stringstream ss(line);
+        std::string colName;
+        while (std::getline(ss, colName, ',')) {
+            addColumn(colName);
+        }
+
+        while (std::getline(file, line)) {
+            std::stringstream row_ss(line);
+            std::string cell;
+            std::vector<Value> rowVals;
+            while (std::getline(row_ss, cell, ',')) {
+                if (cell.empty() || cell == "NA") {
+                    rowVals.push_back(std::monostate{});
+                } else {
+                    try {
+                        size_t idx = 0;
+                        int iVal = std::stoi(cell, &idx);
+                        if (idx == cell.size()) {
+                            rowVals.push_back(iVal);
+                        } else {
+                            double dVal = std::stod(cell, &idx);
+                            if (idx == cell.size()) {
+                                rowVals.push_back(dVal);
+                            } else {
+                                rowVals.push_back(cell);
+                            }
+                        }
+                    } catch (...) {
+                        rowVals.push_back(cell);
+                    }
+                }
+            }
+            addRowVector(rowVals);
+        }
+    }
+
+    void toCSV(std::string_view filename) const {
+        std::ofstream file{std::string(filename)};
+        if (!file.is_open()) throw std::runtime_error("Could not open file for writing");
 
         for (size_t i = 0; i < columns_.size(); ++i) {
             file << columns_[i].name;
@@ -530,9 +461,8 @@ public:
         file << "\n";
 
         for (size_t r = 0; r < row_count_; ++r) {
-            for (size_t i = 0; i < columns_.size(); ++i) {
-                const auto& val = columns_[i].data[r];
-                std::visit([&file](auto&& arg) {
+            for (size_t c = 0; c < columns_.size(); ++c) {
+                std::visit([&file](const auto& arg) {
                     using T = std::decay_t<decltype(arg)>;
                     if constexpr (std::is_same_v<T, std::monostate>) {
                         file << "NA";
@@ -541,86 +471,213 @@ public:
                     } else {
                         file << arg;
                     }
-                }, val);
-
-                if (i + 1 < columns_.size()) file << ",";
+                }, columns_[c].data[r]);
+                if (c + 1 < columns_.size()) file << ",";
             }
             file << "\n";
         }
     }
 
-    bool fromCSV(const std::string& filename) {
-        std::ifstream file(filename);
-        if (!file.is_open()) return false;
-
-        std::string line;
-        if (!std::getline(file, line)) return false;
-
-        columns_.clear();
-        row_count_ = 0;
-        {
-            std::stringstream ss(line);
-            std::string col_name;
-            while (std::getline(ss, col_name, ',')) {
-                if (!col_name.empty() && col_name.back() == '\r') col_name.pop_back();
-                addColumn(col_name);
-            }
-        }
-
-        while (std::getline(file, line)) {
-            if (line.empty() || line == "\r") continue;
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-
-            std::stringstream ss(line);
-            std::string cell;
-            std::vector<Value> row_values;
-            while (std::getline(ss, cell, ',')) {
-                if (!cell.empty() && cell.back() == '\r') cell.pop_back();
-                row_values.push_back(parseCell(cell));
-            }
-
-            if (row_values.size() == columns_.size()) {
-                for (size_t i = 0; i < columns_.size(); ++i) {
-                    columns_[i].data.push_back(row_values[i]);
-                }
-                ++row_count_;
-            }
-        }
-        return true;
-    }
-
-    void toJSON(const std::string& filename) const {
-        std::ofstream file(filename);
-        if (!file.is_open()) return;
+    void toJSON(std::string_view filename) const {
+        std::ofstream file{std::string(filename)};
+        if (!file.is_open()) throw std::runtime_error("Could not open file for writing");
 
         file << "[\n";
         for (size_t r = 0; r < row_count_; ++r) {
             file << "  {\n";
-            for (size_t i = 0; i < columns_.size(); ++i) {
-                file << "    \"" << columns_[i].name << "\": ";
-                const auto& val = columns_[i].data[r];
-                
-                std::visit([&file](auto&& arg) {
+            for (size_t c = 0; c < columns_.size(); ++c) {
+                file << "    \"" << columns_[c].name << "\": ";
+                std::visit([&file](const auto& arg) {
                     using T = std::decay_t<decltype(arg)>;
                     if constexpr (std::is_same_v<T, std::monostate>) {
                         file << "null";
-                    } else if constexpr (std::is_same_v<T, std::string>) {
-                        file << "\"" << arg << "\"";
                     } else if constexpr (std::is_same_v<T, bool>) {
                         file << (arg ? "true" : "false");
+                    } else if constexpr (std::is_same_v<T, std::string>) {
+                        file << "\"" << arg << "\"";
                     } else {
                         file << arg;
                     }
-                }, val);
-
-                if (i + 1 < columns_.size()) file << ",";
+                }, columns_[c].data[r]);
+                if (c + 1 < columns_.size()) file << ",";
                 file << "\n";
             }
             file << "  }" << (r + 1 < row_count_ ? "," : "") << "\n";
         }
         file << "]\n";
     }
+
+    void print() const {
+        if (columns_.empty()) {
+            std::cout << "[Empty Table]\n";
+            return;
+        }
+
+        for (size_t i = 0; i < columns_.size(); ++i) {
+            std::cout << std::setw(15) << columns_[i].name << " | ";
+        }
+        std::cout << "\n";
+
+        for (size_t i = 0; i < columns_.size(); ++i) {
+            std::cout << std::string(17, '-');
+        }
+        std::cout << "\n";
+
+        for (size_t r = 0; r < row_count_; ++r) {
+            for (size_t c = 0; c < columns_.size(); ++c) {
+                std::cout << std::setw(15);
+                std::visit([](const auto& arg) {
+                    using T = std::decay_t<decltype(arg)>;
+                    if constexpr (std::is_same_v<T, std::monostate>) {
+                        std::cout << "NA";
+                    } else if constexpr (std::is_same_v<T, bool>) {
+                        if (arg) std::cout << "true"; else std::cout << "false";
+                    } else {
+                        std::cout << arg;
+                    }
+                }, columns_[c].data[r]);
+                std::cout << " | ";
+            }
+            std::cout << "\n";
+        }
+    }
+
+    std::vector<Column> columns_;
+    size_t row_count_;
 };
+
+
+// ==========================================
+// BLOCK 7: RowProxy Class (Type-Safe Row Access)
+// ==========================================
+class RowProxy {
+public:
+    RowProxy(const Table& table, size_t rowIndex) : table_(table), rowIndex_(rowIndex) {}
+
+    template<typename T>
+    T get(std::string_view colName) const {
+        size_t colIdx = table_.findColumnIndex(colName);
+        const auto& val = table_.columns_[colIdx].data[rowIndex_];
+        if constexpr (std::is_same_v<T, int>) {
+            if (std::holds_alternative<int>(val)) return std::get<int>(val);
+            if (std::holds_alternative<double>(val)) return static_cast<int>(std::get<double>(val));
+        } else if constexpr (std::is_same_v<T, double>) {
+            if (std::holds_alternative<double>(val)) return std::get<double>(val);
+            if (std::holds_alternative<int>(val)) return static_cast<double>(std::get<int>(val));
+        } else if constexpr (std::is_same_v<T, bool>) {
+            if (std::holds_alternative<bool>(val)) return std::get<bool>(val);
+        } else if constexpr (std::is_same_v<T, std::string>) {
+            if (std::holds_alternative<std::string>(val)) return std::get<std::string>(val);
+        }
+        throw std::runtime_error("Type mismatch or unsupported type in RowProxy::get");
+    }
+
+private:
+    const Table& table_;
+    size_t rowIndex_;
+};
+
+
+// ==========================================
+// BLOCK 8: GroupByProxy Class (Aggregation Support)
+// ==========================================
+class GroupByProxy {
+public:
+    GroupByProxy(Table& table, std::string_view groupCol) : table_(table), groupCol_(groupCol) {}
+
+    Table mean(std::string_view targetCol) const {
+        std::unordered_map<Value, std::pair<double, size_t>> groups;
+        size_t groupColIdx = table_.findColumnIndex(groupCol_);
+        size_t targetColIdx = table_.findColumnIndex(targetCol);
+
+        for (size_t i = 0; i < table_.rowCount(); ++i) {
+            Value key = table_.columns_[groupColIdx].data[i];
+            const auto& val = table_.columns_[targetColIdx].data[i];
+            double v = 0.0;
+            bool valid = false;
+            if (std::holds_alternative<int>(val)) { v = std::get<int>(val); valid = true; }
+            else if (std::holds_alternative<double>(val)) { v = std::get<double>(val); valid = true; }
+
+            if (valid) {
+                groups[key].first += v;
+                groups[key].second += 1;
+            }
+        }
+
+        Table result;
+        result.addColumn(groupCol_);
+        result.addColumn(std::string(targetCol) + "_mean");
+
+        for (const auto& [key, p] : groups) {
+            if (p.second > 0) {
+                result.addRowVector({key, p.first / p.second});
+            }
+        }
+        return result;
+    }
+
+    Table sum(std::string_view targetCol) const {
+        std::unordered_map<Value, double> groups;
+        size_t groupColIdx = table_.findColumnIndex(groupCol_);
+        size_t targetColIdx = table_.findColumnIndex(targetCol);
+
+        for (size_t i = 0; i < table_.rowCount(); ++i) {
+            Value key = table_.columns_[groupColIdx].data[i];
+            const auto& val = table_.columns_[targetColIdx].data[i];
+            double v = 0.0;
+            bool valid = false;
+            if (std::holds_alternative<int>(val)) { v = std::get<int>(val); valid = true; }
+            else if (std::holds_alternative<double>(val)) { v = std::get<double>(val); valid = true; }
+
+            if (valid) {
+                groups[key] += v;
+            }
+        }
+
+        Table result;
+        result.addColumn(groupCol_);
+        result.addColumn(std::string(targetCol) + "_sum");
+
+        for (const auto& [key, total] : groups) {
+            result.addRowVector({key, total});
+        }
+        return result;
+    }
+
+private:
+    Table& table_;
+    std::string groupCol_;
+};
+
+
+// ==========================================
+// BLOCK 9: Deferred Inline Method Implementations
+// ==========================================
+template<typename Predicate>
+inline Table Table::filter(Predicate pred) const {
+    Table result;
+    for (const auto& col : columns_) {
+        result.addColumn(col.name);
+    }
+
+    for (size_t i = 0; i < row_count_; ++i) {
+        RowProxy proxy(*this, i);
+        if (pred(proxy)) {
+            std::vector<Value> rowVals;
+            rowVals.reserve(columns_.size());
+            for (const auto& col : columns_) {
+                rowVals.push_back(col.data[i]);
+            }
+            result.addRowVector(rowVals);
+        }
+    }
+    return result;
+}
+
+inline GroupByProxy Table::groupBy(std::string_view colName) {
+    findColumnIndex(colName);
+    return GroupByProxy(*this, colName);
+}
 
 } // namespace CoreKit
 
